@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <sys/types.h>
+#include <errno.h>
 #include <netdb.h>
 
 #include <sys/socket.h>
@@ -19,7 +20,7 @@
 int main (int argc, char* argv[])
 {
 	// Check command line arguments for port number =================================================================
-	char port_num[10];
+	char port_num[10] = {0};
 	int loop = TRUE;
 	if(argc == 1) // Check if there is no argument passed through
 	{
@@ -74,7 +75,7 @@ int main (int argc, char* argv[])
 	fprintf(stdout,"Listening on Port: %s \n",port_num);
 
 	// Get host ip for later use ===================================================================================
-	char hostname[40];
+	char hostname[40] = {0};
 	struct hostent *host;
 	if(gethostname(hostname,40) == -1)
 	{
@@ -86,24 +87,23 @@ int main (int argc, char* argv[])
 	}
 
 	// Setup structs and data storage for incoming connections ======================================================
-	struct timeval tv;
-	tv.tv_sec = 0;
-	tv.tv_usec = 100000;
 	struct sockaddr_storage their_addr;
 	socklen_t addr_size;
 	int new_fd;
 	int fdmax;
 	int inc;
-	char remoteIP[INET6_ADDRSTRLEN];
-	char buf[200];
-	char peerip[20];
+
+	char remoteIP[INET6_ADDRSTRLEN] = {0};
+	char buf[200] = {0};
+	char peerip[20] = {0};
 	char *command_name;
+
 	fd_set master;
 	fd_set read_fds;
 	FD_ZERO(&master);
 	FD_ZERO(&read_fds);
-	FD_SET(0,&master);
-	FD_SET(s,&master);
+	FD_SET(0,&master);	//stdin
+	FD_SET(s,&master);	//listening
 	fdmax = s;
 	int FD_ARR[20];
 	int connections = 0;
@@ -114,11 +114,16 @@ int main (int argc, char* argv[])
 	{
 		fprintf(stdout,"localhost:");
 		fflush(stdout);
-		// Setup command line for token inputs ======================================================================
+    	fflush(stdin);
 		read_fds = master; // Copy master file descriptor into read_fds
 		// Check which sockets are ready for handling, If none timeout after 0.25 seconds
+    	select_restart:
 		if(select(fdmax+1,&read_fds,NULL,NULL,NULL)==-1)
 		{
+		    if(errno == EINTR)
+		    {
+		    	goto select_restart;
+		    }
 			fprintf(stderr,"Select error\n");
 			exit(5);
 		}
@@ -127,7 +132,7 @@ int main (int argc, char* argv[])
 			if(FD_ISSET(inc,&read_fds)) // Loop through all open fds, anc check if its within the set
 			{
 				if(inc == s) // Handle the listenening socket and accept new connections ============================
-				{
+				{					
 					if(connections < 20)
 					{
 						addr_size = sizeof their_addr;
@@ -140,12 +145,8 @@ int main (int argc, char* argv[])
 								fdmax = new_fd; // keep track of largest fd
 							}
 							FD_ARR[connections] = new_fd; // add fd to fd_arr for easy listing and ID
-							connections++; // increase size of array
-							struct sockaddr_in* pV4Addr = (struct sockaddr_in*)&their_addr;
-							struct in_addr ipAddr = pV4Addr->sin_addr;
-							fprintf("Incoming connection established: %s on SOCKET: %d\n",
-								inet_ntop(AF_INET,&ipAddr,NULL,INET6_ADDRSTRLEN),
-								new_fd);
+              				connections++; // increase size of array
+              				fprintf(stdout,"new connection accepted\n");
 						}
 					}	
 				}
@@ -161,9 +162,7 @@ int main (int argc, char* argv[])
 						{
 							fprintf(stdout,"Connection from %d has closed. \n",inc);
 						}
-
-						if(close(inc) != -1)
-						{
+              				close(inc);
 							FD_CLR(inc,&master);
 							int jj;
 							for(jj=0;jj<connections;jj++) // Iterate through array and find which element is this socket
@@ -182,9 +181,6 @@ int main (int argc, char* argv[])
 								}
 							}
 							connections--; // Reduce size of FD_ARR by 1
-						}
-						else
-							fprintf(stderr,"could not close connection on recv 0. \n");
 					}
 					else // Print out the message ========================================================================
 					{
@@ -193,7 +189,7 @@ int main (int argc, char* argv[])
 							fprintf(stderr,"could not get peer name. \n");
 						else
 						{	
-							struct sockaddr_in *sin = (struct sockaddr_in *)&their_addr;
+							struct sockaddr_in *sin = (struct sockaddr_in *)&their_addr; // Cast to sockaddr structure
 							strcpy(peerip,inet_ntoa(sin->sin_addr));
 							fprintf(stdout,"%s: %s \n",peerip,buf); // Print IP then message
 						}
@@ -201,6 +197,7 @@ int main (int argc, char* argv[])
 				}
 				else // handle stdin ================================================================================
 				{
+          			buf[0] = 0;
 					fgets(buf,100,stdin);
 					command_name = strtok(buf," \n");
 					// Handle client commands  ============================================================
@@ -221,7 +218,7 @@ int main (int argc, char* argv[])
 					}
 					else if(strncmp(command_name,"myip",20) == 0) // myip command ================================
 					{
-						fprintf(stdout,"MYIP: %s\n",inet_ntoa(*((struct in_addr*) host->h_addr_list[0]))); 
+						fprintf(stdout,"MYIP: %s\n",inet_ntoa(*((struct in_addr*) host->h_addr_list[0]))); // converts IP address of network byte order to numbers and dots notation
 					}
 					else if(strncmp(command_name,"myport",20) == 0) // myport command
 					{
@@ -229,12 +226,10 @@ int main (int argc, char* argv[])
 					}
 					else if(strncmp(command_name,"connect",20) == 0) // connect command ================================
 					{
-						command_name = strtok(NULL," \n");
-						char iptoken[20];
-						strcpy(iptoken,command_name); // Get IP from command line token
-						command_name = strtok(NULL," \n");
-						char port_token[5];
-						strcpy(port_token,command_name);	// Get port from command line token
+						char iptoken[20]={0};
+						strcpy(iptoken,strtok(NULL," \n")); // Get IP from command line token
+						char port_token[5]={0};
+						strcpy(port_token,strtok(NULL," \n"));	// Get port from command line token
 						if(iptoken == NULL || port_token == NULL)
 						{
 							fprintf(stderr, "Please enter proper IP address and port number.\n");
@@ -294,44 +289,41 @@ int main (int argc, char* argv[])
 							}
 							else
 							{	
-								char peerip[20];
-								char peerport[20];
-								struct sockaddr_in *sin = (struct sockaddr_in *)&their_addr;
-								strcpy(peerip,inet_ntoa(sin->sin_addr));
-								strcpy(peerport,ntohs(sin->sin_port));
-								fprintf(stdout,"%d: %s 	%s\n",jj,peerip,peerport);
+								char peerip[20] = {0};
+								char peerport[20] = {0};                 
+								struct sockaddr_in *sin = (struct sockaddr_in*)&their_addr;
+								strcpy(peerip,inet_ntoa(sin->sin_addr));                                                           
+								sprintf(peerport,"%d",ntohs(sin->sin_port));  
+                				fprintf(stdout,"%d: %s 	%s\n",jj,peerip,peerport);
 							}
 						}
-				
 						fprintf(stdout,"============================================\n");
 					}
 					else if(strncmp(command_name,"terminate",20) == 0) // terminate command ================================
 					{
-						command_name = strtok(NULL," \n");
-						char idtoken[5];
-						strcpy(idtoken,command_name);
+						char idtoken[5] = {0};
+            			memset(idtoken,0,5);
+						strcpy(idtoken,strtok(NULL," \n"));
 						if(idtoken != NULL)
 						{
 							int id;
-							sscanf(idtoken,"%d",&id);
-							if(FD_ISSET(id,&read_fds))
+							sprintf(idtoken,"%d",&id);
+							if(close(FD_ARR[id])!= -1)
 							{
-								if(close(id)!=-1)
-								{
-											FD_CLR(FD_ARR[id],&master);
-											int ii;
-											for(ii = id;ii < connections;ii++)
+                    					fprintf(stdout,"Cleared %d \n",FD_ARR[id]);
+										FD_CLR(FD_ARR[id],&master);
+										int ii;
+										for(ii = id;ii < connections;ii++)
+										{
+											if(ii != 19)
 											{
-												if(ii != 19)
-												{
-													FD_ARR[ii] = FD_ARR[ii+1];
-												}
+												FD_ARR[ii] = FD_ARR[ii+1];
 											}
-											connections--;
-								}
-								else
-									fprintf(stderr,"Could not close connection: %s\n",idtoken);
-							}
+										}
+										connections--;
+              				}
+							else
+								fprintf(stderr,"Could not close connection: %s\n",idtoken);
 						}
 						else
 						{
@@ -340,18 +332,16 @@ int main (int argc, char* argv[])
 					}
 					else if(strncmp(command_name,"send",20) == 0) // send command ================================
 					{
-						char idtoken[5];	// Grab socket id from command line token
-						command_name = strtok(NULL," \n");
-						strcpy(idtoken,command_name);
+						char idtoken[5] = {0};	// Grab socket id from command line token
+						strcpy(idtoken,strtok(NULL," \n"));
 						int id;
-						sscanf(idtoken,"%d",&id);
+						sprintf(idtoken,"%d",id); // convert to integer
 						fprintf(stdout,"ID: %d\n",id);
-						if(id > 0 && id < 20)
+						if(id > -1 && id < 20)
 						{
-
-							char msg[200]; 
-							command_name = strtok(NULL," \n"); // Grab the message from command line token 
-							strcpy(msg,command_name);
+							char msg[200] = {0};
+              				memset(msg,0,200);
+							strcpy(msg,strtok(NULL,"\n")); 	// Grab the message from command line token 
 							int len = strlen(msg);
 							int bytes_sent = send(FD_ARR[id],msg,len,0); // send message 
 							if(bytes_sent == -1)
@@ -363,7 +353,6 @@ int main (int argc, char* argv[])
 						{
 							fprintf(stderr, "please select an id from the list\n");
 						}
-
 					}
 					else if(strncmp(command_name,"exit",20) == 0) // exit command ================================
 					{
